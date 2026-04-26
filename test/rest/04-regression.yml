@@ -1,0 +1,81 @@
+info:
+  name: get regression
+  type: http
+  seq: 4
+
+http:
+  method: GET
+  url: "{{baseUrl}}/regression"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+
+runtime:
+  assertions:
+    - expression: res.status
+      operator: eq
+      value: "200"
+    - expression: res.body.r_squared
+      operator: isNumber
+
+  scripts:
+    - type: before-request
+      code: |-
+        const baseUrl = bru.getEnvVar("baseUrl") || bru.getVar("baseUrl");
+        if (!baseUrl) {
+          throw new Error(
+            "baseUrl is not configured. " +
+            "Pass --env-var baseUrl=http://localhost:8000 when running bru."
+          );
+        }
+
+    - type: tests
+      code: |-
+        test("has all regression fields", function() {
+          expect(res.body).to.have.all.keys(
+            "slope", "intercept", "r_squared", "predictions"
+          );
+        });
+
+        test("slope and intercept are numbers", function() {
+          expect(res.body.slope).to.be.a("number");
+          expect(res.body.intercept).to.be.a("number");
+        });
+
+        test("r_squared is between 0 and 1", function() {
+          expect(res.body.r_squared).to.be.at.least(0);
+          expect(res.body.r_squared).to.be.at.most(1);
+        });
+
+        test("predictions is a non-empty array", function() {
+          expect(res.body.predictions).to.be.an("array");
+          expect(res.body.predictions.length).to.be.greaterThan(0);
+        });
+
+        test("each prediction has required fields", function() {
+          res.body.predictions.forEach(function(p) {
+            expect(p).to.have.property("city");
+            expect(p).to.have.property("population");
+            expect(p).to.have.property("visitors");
+            expect(p).to.have.property("predicted_visitors");
+          });
+        });
+
+        test("predicted_visitors are non-negative", function() {
+          res.body.predictions.forEach(function(p) {
+            expect(p.predicted_visitors).to.be.at.least(
+              0, p.city + " has a negative predicted_visitors"
+            );
+          });
+        });
+
+        test("predictions count matches museums count", function() {
+          const museums = bru.getVar("ingestedMuseums");
+          if (museums) {
+            expect(res.body.predictions.length).to.equal(Number(museums));
+          }
+        });

@@ -1,0 +1,120 @@
+name: ♻ Docker build + scan
+
+# Reusable layer: build both images → Trivy vulnerability scan → optional ECR push
+# push=false  →  CI validation only (no AWS credentials needed)
+# push=true   →  CD path, tags image with SHA + latest and pushes to ECR
+
+on:
+  workflow_call:
+    inputs:
+      push:
+        description: Push images to ECR after building
+        type: boolean
+        default: false
+      image-tag:
+        description: Primary image tag (e.g. git SHA)
+        type: string
+        default: latest
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: false
+      AWS_SECRET_ACCESS_KEY:
+        required: false
+      AWS_REGION:
+        required: false
+      ECR_API_URL:
+        required: false
+      ECR_JUPYTER_URL:
+        required: false
+
+jobs:
+  build-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Layer caching dramatically speeds up re-builds on unchanged layers
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          load: true
+          tags: museums-api:${{ inputs.image-tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build Jupyter image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.jupyter
+          push: false
+          load: true
+          tags: museums-jupyter:${{ inputs.image-tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Trivy scans for OS + library CVEs. CRITICAL/HIGH with a fix break the build.
+      - name: Trivy scan — API image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: museums-api:${{ inputs.image-tag }}
+          format: sarif
+          output: trivy-api.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Trivy scan — Jupyter image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: museums-jupyter:${{ inputs.image-tag }}
+          format: sarif
+          output: trivy-jupyter.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Upload Trivy results to Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-api.sarif
+
+      # ── ECR push (CD path only) ─────────────────────────────────────────────
+      - name: Configure AWS credentials
+        if: inputs.push
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to ECR
+        if: inputs.push
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Push API to ECR (SHA + latest)
+        if: inputs.push
+        run: |
+          docker tag museums-api:${{ inputs.image-tag }} ${{ secrets.ECR_API_URL }}:${{ inputs.image-tag }}
+          docker tag museums-api:${{ inputs.image-tag }} ${{ secrets.ECR_API_URL }}:latest
+          docker push ${{ secrets.ECR_API_URL }}:${{ inputs.image-tag }}
+          docker push ${{ secrets.ECR_API_URL }}:latest
+
+      - name: Push Jupyter to ECR (SHA + latest)
+        if: inputs.push
+        run: |
+          docker tag museums-jupyter:${{ inputs.image-tag }} ${{ secrets.ECR_JUPYTER_URL }}:${{ inputs.image-tag }}
+          docker tag museums-jupyter:${{ inputs.image-tag }} ${{ secrets.ECR_JUPYTER_URL }}:latest
+          docker push ${{ secrets.ECR_JUPYTER_URL }}:${{ inputs.image-tag }}
+          docker push ${{ secrets.ECR_JUPYTER_URL }}:latest

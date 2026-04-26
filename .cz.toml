@@ -1,0 +1,10 @@
+# Commitizen configuration — enforces Conventional Commits format.
+# Used by the pre-commit commit-msg hook and by python-semantic-release.
+[tool.commitizen]
+name = "cz_conventional_commits"
+tag_format = "v$version"
+version_scheme = "semver2"
+version_provider = "pep621"   # reads/writes project.version in pyproject.toml
+changelog_file = "CHANGELOG.md"
+update_changelog_on_bump = true
+major_version_zero = true     # 0.x: feat→patch, breaking→minor (pre-1.0 behaviour)

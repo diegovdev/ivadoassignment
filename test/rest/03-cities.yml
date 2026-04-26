@@ -1,0 +1,71 @@
+info:
+  name: get cities
+  type: http
+  seq: 3
+
+http:
+  method: GET
+  url: "{{baseUrl}}/cities"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+
+runtime:
+  assertions:
+    - expression: res.status
+      operator: eq
+      value: "200"
+
+  scripts:
+    - type: before-request
+      code: |-
+        const baseUrl = bru.getEnvVar("baseUrl") || bru.getVar("baseUrl");
+        if (!baseUrl) {
+          throw new Error(
+            "baseUrl is not configured. " +
+            "Pass --env-var baseUrl=http://localhost:8000 when running bru."
+          );
+        }
+
+    - type: tests
+      code: |-
+        test("response is an array", function() {
+          expect(res.body).to.be.an("array");
+        });
+
+        test("count matches ingest output", function() {
+          const expected = bru.getVar("ingestedCities");
+          if (expected) {
+            expect(res.body.length).to.equal(Number(expected));
+          }
+        });
+
+        test("each city has required fields", function() {
+          res.body.forEach(function(city) {
+            expect(city).to.have.property("id");
+            expect(city).to.have.property("name");
+            expect(city).to.have.property("country");
+            expect(city).to.have.property("population");
+          });
+        });
+
+        test("city names are non-empty strings", function() {
+          res.body.forEach(function(city) {
+            expect(city.name).to.be.a("string");
+            expect(city.name.trim().length).to.be.greaterThan(0);
+          });
+        });
+
+        test("populations are null or positive integers", function() {
+          res.body.forEach(function(city) {
+            if (city.population !== null) {
+              expect(city.population).to.be.a("number");
+              expect(Number.isInteger(city.population)).to.be.true;
+              expect(city.population).to.be.greaterThan(0);
+            }
+          });
+        });

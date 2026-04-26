@@ -1,0 +1,3 @@
+name: museums-preview
+runtime: python
+description: Shared preview infrastructure for per-PR deployments (SQLite, public ECS tasks)

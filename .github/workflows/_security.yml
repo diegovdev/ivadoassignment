@@ -1,0 +1,103 @@
+name: ♻ Security scan
+
+# Reusable layer: SAST (Bandit) + dependency audit (pip-audit) + CodeQL
+# Called by ci.yml and nightly.yml
+# Does NOT scan container images — that lives in _docker-build.yml (Trivy)
+
+on:
+  workflow_call:
+
+jobs:
+  sast:
+    name: SAST + dependency audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Bandit — Python SAST (medium+ severity)
+        run: |
+          uv run bandit -r src/ \
+            --severity-level medium \
+            --confidence-level medium \
+            --format json \
+            --output bandit-report.json
+        # exit-code non-zero only on issues found; continue so we upload the report
+        continue-on-error: true
+
+      - name: pip-audit — dependency vulnerabilities
+        run: |
+          uv run pip-audit \
+            --format json \
+            --output pip-audit-report.json
+        continue-on-error: true
+
+      - name: Upload security artefacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+            pip-audit-report.json
+
+      - name: Fail if high-severity Bandit findings
+        run: |
+          python3 -c "
+          import json, sys
+          data = json.load(open('bandit-report.json'))
+          highs = [r for r in data.get('results', []) if r['issue_severity'] == 'HIGH']
+          if highs:
+              for r in highs:
+                  print(f\"HIGH: {r['filename']}:{r['line_number']} — {r['issue_text']}\")
+              sys.exit(1)
+          print('No HIGH severity Bandit findings.')
+          "
+
+      - name: Fail if any pip-audit vulnerabilities
+        run: |
+          python3 -c "
+          import json, sys
+          data = json.load(open('pip-audit-report.json'))
+          vulns = data.get('dependencies', [])
+          found = [d for d in vulns if d.get('vulns')]
+          if found:
+              for d in found:
+                  for v in d['vulns']:
+                      print(f\"VULN: {d['name']}=={d['version']} — {v['id']}: {v['description'][:80]}\")
+              sys.exit(1)
+          print('No dependency vulnerabilities found.')
+          "
+
+  codeql:
+    name: CodeQL analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          queries: security-extended
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Run CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:python

@@ -1,0 +1,73 @@
+info:
+  name: get museums
+  type: http
+  seq: 2
+
+http:
+  method: GET
+  url: "{{baseUrl}}/museums"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+
+runtime:
+  assertions:
+    - expression: res.status
+      operator: eq
+      value: "200"
+
+  scripts:
+    - type: before-request
+      code: |-
+        const baseUrl = bru.getEnvVar("baseUrl") || bru.getVar("baseUrl");
+        if (!baseUrl) {
+          throw new Error(
+            "baseUrl is not configured. " +
+            "Pass --env-var baseUrl=http://localhost:8000 when running bru."
+          );
+        }
+
+    - type: tests
+      code: |-
+        test("response is an array", function() {
+          expect(res.body).to.be.an("array");
+        });
+
+        test("count matches ingest output", function() {
+          const expected = bru.getVar("ingestedMuseums");
+          if (expected) {
+            expect(res.body.length).to.equal(Number(expected));
+          }
+        });
+
+        test("each museum has required fields", function() {
+          res.body.forEach(function(museum) {
+            expect(museum).to.have.property("id");
+            expect(museum).to.have.property("name");
+            expect(museum).to.have.property("city");
+            expect(museum).to.have.property("country");
+            expect(museum).to.have.property("annual_visitors");
+            expect(museum).to.have.property("city_population");
+          });
+        });
+
+        test("all museums exceed 2 million visitors threshold", function() {
+          res.body.forEach(function(museum) {
+            expect(museum.annual_visitors).to.be.at.least(
+              2000000, museum.name + " is below the 2M threshold"
+            );
+          });
+        });
+
+        test("city_population is null or a positive integer", function() {
+          res.body.forEach(function(museum) {
+            if (museum.city_population !== null) {
+              expect(museum.city_population).to.be.a("number");
+              expect(museum.city_population).to.be.greaterThan(0);
+            }
+          });
+        });

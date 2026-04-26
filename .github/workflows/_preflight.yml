@@ -1,0 +1,50 @@
+name: ♻ Preflight
+
+# Reusable layer: fast sanity checks that run before expensive jobs.
+# Fail in < 30 s so broken configs don't waste CI minutes.
+#
+# Checks:
+#   - uv.lock is in sync with pyproject.toml
+#   - all .github/workflows/*.yml files are valid YAML
+#   - docker-compose.yml is a valid Compose config
+
+on:
+  workflow_call:
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: uv lockfile in sync
+        run: |
+          uv lock --check
+          echo "✅ uv.lock is up to date"
+
+      - name: GitHub workflow YAML syntax
+        run: |
+          python3 -c "
+          import yaml, glob, sys
+          files = glob.glob('.github/workflows/*.yml')
+          errors = []
+          for f in files:
+              try:
+                  yaml.safe_load(open(f))
+              except yaml.YAMLError as e:
+                  errors.append(f'{f}: {e}')
+          if errors:
+              [print(f'ERROR: {e}') for e in errors]
+              sys.exit(1)
+          print(f'✅ {len(files)} workflow files are valid YAML')
+          "
+
+      - name: Docker Compose config valid
+        run: |
+          docker compose config --quiet
+          echo "✅ docker-compose.yml is valid"

@@ -1,0 +1,84 @@
+name: Stress test (manual)
+
+# On-demand stress test against any running environment.
+# Useful for load testing staging or prod before a big release.
+# Does NOT spin up Docker Compose — it hits the URL you provide.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target-url:
+        description: "Base URL of the Museums API (e.g. http://your-alb.amazonaws.com)"
+        required: true
+        default: "http://localhost:8000"
+      users:
+        description: "Peak concurrent users"
+        required: false
+        default: "50"
+      spawn-rate:
+        description: "Users added per second during ramp-up"
+        required: false
+        default: "10"
+      run-time:
+        description: "Test duration (e.g. 2m, 10m, 1h)"
+        required: false
+        default: "5m"
+      fail-on-error-rate:
+        description: "Fail if error rate exceeds this fraction (e.g. 0.01 = 1%)"
+        required: false
+        default: "0.01"
+      p95-threshold-ms:
+        description: "Fail if p95 response time exceeds this value in ms (0 = skip)"
+        required: false
+        default: "2000"
+      p99-threshold-ms:
+        description: "Fail if p99 response time exceeds this value in ms (0 = skip)"
+        required: false
+        default: "3500"
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install stress dependencies
+        run: uv sync --extra stress
+
+      - name: Verify API is reachable
+        run: |
+          curl --retry 3 --fail "${{ inputs.target-url }}/docs" > /dev/null
+          echo "✅ API reachable at ${{ inputs.target-url }}"
+
+      - name: Run Locust
+        run: |
+          uv run locust \
+            --headless \
+            --host "${{ inputs.target-url }}" \
+            --users "${{ inputs.users }}" \
+            --spawn-rate "${{ inputs.spawn-rate }}" \
+            --run-time "${{ inputs.run-time }}" \
+            --locustfile test/stress/locustfile.py \
+            --html test/stress/manual-report.html \
+            --csv test/stress/manual \
+            --exit-code-on-error 0
+
+      - name: Assert error rate and latency thresholds
+        run: |
+          python3 test/stress/check_results.py \
+            test/stress/manual_stats.csv \
+            "${{ inputs.fail-on-error-rate }}" \
+            "${{ inputs.p95-threshold-ms }}" \
+            "${{ inputs.p99-threshold-ms }}"
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stress-manual-${{ github.run_number }}
+          path: test/stress/manual*

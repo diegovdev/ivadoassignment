@@ -1,0 +1,86 @@
+[project]
+name = "museums"
+version = "0.1.0"
+description = "Museum visitor correlation with city population"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sqlalchemy>=2.0",
+    "httpx>=0.28",
+    "pandas>=2.2",
+    "scikit-learn>=1.5",
+    "pydantic-settings>=2.6",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.3",
+    "psycopg2-binary>=2.9",   # PostgreSQL driver (RDS on AWS; no-op for SQLite locally)
+]
+
+notebook = [
+    "jupyter>=1.1",
+    "matplotlib>=3.9",
+    "seaborn>=0.13",
+    "requests>=2.32",
+]
+stress = [
+    "locust>=2.32",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/museums"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["test/unit"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.black]
+line-length = 88
+target-version = ["py312"]
+
+[dependency-groups]
+dev = [
+    "anyio>=4.13.0",
+    "bandit>=1.8",
+    "black>=26.3.1",
+    "commitizen>=4.6",
+    "httpx>=0.28.1",
+    "pip-audit>=2.9",
+    "pre-commit>=4.2",
+    "python-semantic-release>=9.21",
+    "pytest>=8",
+    "pytest-asyncio>=1.3.0",
+    "pytest-cov>=6",
+    "pytest-httpx>=0.36.2",
+    "ruff>=0.8",
+]
+
+# ── Semantic release ──────────────────────────────────────────────────────────
+# Driven by Conventional Commits; bumps version in pyproject.toml, writes
+# CHANGELOG.md, creates GitHub Release + git tag on every merge to main.
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+branch = "main"
+changelog_file = "CHANGELOG.md"
+build_command = "echo 'no build needed'"
+upload_to_pypi = false
+upload_to_release = true
+tag_format = "v{version}"
+
+[tool.semantic_release.commit_parser_options]
+allowed_tags = ["feat", "fix", "perf", "refactor", "docs", "style", "test", "chore", "ci", "build"]
+minor_tags = ["feat"]
+patch_tags = ["fix", "perf"]
+
+[tool.semantic_release.changelog.sections]
+"feat" = "✨ Features"
+"fix" = "🐛 Bug Fixes"
+"perf" = "⚡ Performance"
+"deps" = "📦 Dependencies"
+"docs" = "📚 Documentation"

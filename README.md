@@ -198,7 +198,7 @@ All pipelines are composed from reusable workflow layers in `.github/workflows/`
 | Python check | `_python-check.yml` | ruff + black + pytest --cov, matrix: Python 3.12 + 3.13 |
 | Security | `_security.yml` | Bandit SAST + pip-audit CVEs + CodeQL |
 | Docker build | `_docker-build.yml` | Buildx + Trivy CRITICAL/HIGH scan + optional ECR push |
-| Bruno tests | `_bruno-tests.yml` | `bru run` against a live Compose stack |
+| API tests | `_api-tests.yml` | `bru run` against a live Compose stack |
 | Deploy ECS | `_deploy-ecs.yml` | `ecs update-service --force-new-deployment` + smoke test |
 
 ### Pipelines

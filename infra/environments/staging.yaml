@@ -1,0 +1,16 @@
+# Staging / UAT stack — 3 AZs, 1 minimum task, RDS auto-shutdown after hours.
+# Usage: pulumi up --stack staging --config-file environments/staging.yaml
+config:
+  museums:environment: staging
+  museums:az_count: "3"
+  museums:api_cpu: "256"
+  museums:api_memory: "512"
+  museums:ecs_api_desired: "1"
+  museums:ecs_api_min: "1"
+  museums:ecs_api_max: "3"
+  museums:db_instance_class: db.t3.micro
+  museums:db_multi_az: "false"
+  museums:db_deletion_protection: "false"
+  museums:log_retention_days: "7"
+  museums:rds_auto_shutdown: "true"
+  museums:alarm_email: alerts@example.com
