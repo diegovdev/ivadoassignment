@@ -1,0 +1,6 @@
+# Local / dev stack — single AZ, smallest instances, no deletion protection.
+config:
+  museums:az_count: "1"
+  museums:api_cpu: "256"
+  museums:api_memory: "512"
+  # Set via: pulumi config set --secret db_password <value>

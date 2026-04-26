@@ -1,0 +1,53 @@
+info:
+  name: ingest
+  type: http
+  seq: 1
+
+http:
+  method: POST
+  url: "{{baseUrl}}/ingest"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 60000
+  followRedirects: true
+  maxRedirects: 5
+
+runtime:
+  assertions:
+    - expression: res.status
+      operator: eq
+      value: "200"
+
+  scripts:
+    - type: before-request
+      code: |-
+        const baseUrl = bru.getEnvVar("baseUrl") || bru.getVar("baseUrl");
+        if (!baseUrl) {
+          throw new Error(
+            "baseUrl is not configured. " +
+            "Pass --env-var baseUrl=http://localhost:8000 when running bru."
+          );
+        }
+
+    - type: tests
+      code: |-
+        test("ingested_museums is a positive number", function() {
+          expect(res.body.ingested_museums).to.be.a("number");
+          expect(res.body.ingested_museums).to.be.greaterThan(0);
+        });
+
+        test("cities count is present and positive", function() {
+          expect(res.body.cities).to.be.a("number");
+          expect(res.body.cities).to.be.greaterThan(0);
+        });
+
+        test("museums >= cities (multiple museums per city is valid)", function() {
+          expect(res.body.ingested_museums).to.be.at.least(res.body.cities);
+        });
+
+    - type: after-response
+      code: |-
+        bru.setVar("ingestedMuseums", res.body.ingested_museums);
+        bru.setVar("ingestedCities", res.body.cities);

@@ -1,0 +1,67 @@
+name: CI
+
+# Runs on every PR and push to main.
+# Gates: lint · format · unit tests · security · container build + Trivy scan · Bruno integration tests
+# Does NOT push images or deploy — that is cd.yml's job.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Cancel in-progress runs for the same ref so stale PR runs don't block merges
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    name: Preflight checks
+    uses: ./.github/workflows/_preflight.yml
+
+  python-check:
+    name: Lint · format · tests
+    needs: [preflight]
+    uses: ./.github/workflows/_python-check.yml
+
+  security:
+    name: SAST · audit · CodeQL
+    needs: [preflight]
+    uses: ./.github/workflows/_security.yml
+
+  docker-build:
+    name: Build + Trivy scan
+    needs: [preflight]
+    uses: ./.github/workflows/_docker-build.yml
+    with:
+      push: false
+      image-tag: ci-${{ github.run_number }}
+
+  bruno-tests:
+    name: Bruno integration tests
+    # Run after unit tests pass — no point hitting the API if the code is broken
+    needs: [python-check]
+    uses: ./.github/workflows/_bruno-tests.yml
+    with:
+      seed-data: false   # skip real Wikipedia call on every PR; nightly does full seed
+
+  # Summary job — branch protection rules should require this single job,
+  # not the individual matrix jobs, to keep required-checks easy to manage.
+  all-checks-pass:
+    name: All checks passed
+    needs: [preflight, python-check, security, docker-build, bruno-tests]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          if [[ "${{ needs.preflight.result }}" != "success" || \
+                "${{ needs.python-check.result }}" != "success" || \
+                "${{ needs.security.result }}" != "success" || \
+                "${{ needs.docker-build.result }}" != "success" || \
+                "${{ needs.bruno-tests.result }}" != "success" ]]; then
+            echo "One or more checks failed."
+            exit 1
+          fi
+          echo "✅ All checks passed. Coverage: ${{ needs.python-check.outputs.coverage-pct }}%"

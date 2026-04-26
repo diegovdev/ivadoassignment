@@ -1,0 +1,66 @@
+name: ♻ Python check
+
+# Reusable layer: install → lint → format check → test + coverage
+# Called by ci.yml, cd.yml, nightly.yml
+
+on:
+  workflow_call:
+    outputs:
+      coverage-pct:
+        description: Overall test coverage percentage
+        value: ${{ jobs.check.outputs.coverage-pct }}
+
+jobs:
+  check:
+    name: Python ${{ matrix.python-version }} check
+    runs-on: ubuntu-latest
+    outputs:
+      coverage-pct: ${{ steps.coverage.outputs.pct }}
+
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Lint — ruff
+        run: uv run ruff check src/ test/
+
+      - name: Format check — black
+        run: uv run black --check src/ test/
+
+      - name: Tests + coverage
+        run: |
+          uv run pytest \
+            --cov=museums \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --cov-fail-under=80 \
+            -q
+
+      - name: Extract coverage percentage
+        id: coverage
+        run: |
+          PCT=$(python3 -c "
+          import xml.etree.ElementTree as ET
+          tree = ET.parse('coverage.xml')
+          pct = round(float(tree.getroot().attrib['line-rate']) * 100, 1)
+          print(pct)
+          ")
+          echo "pct=${PCT}" >> "$GITHUB_OUTPUT"
+          echo "Coverage: ${PCT}%"
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml-py${{ matrix.python-version }}
+          path: coverage.xml

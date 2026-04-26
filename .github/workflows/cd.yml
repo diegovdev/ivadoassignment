@@ -1,0 +1,67 @@
+name: CD
+
+# Triggered on push to main (after CI passes).
+# Two-stage deploy: staging (automatic) → prod (requires manual approval via GitHub Environment).
+#
+# GitHub Environment setup required:
+#   Settings → Environments → "prod" → add Required Reviewers
+#   This gates the deploy-prod job until a reviewer approves.
+
+on:
+  push:
+    branches: [main]
+
+# Never cancel an in-flight deploy — a partial deploy is worse than a slow one
+concurrency:
+  group: cd-main
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Preflight checks
+    uses: ./.github/workflows/_preflight.yml
+
+  python-check:
+    name: Lint · format · tests
+    needs: [preflight]
+    uses: ./.github/workflows/_python-check.yml
+
+  docker-build:
+    name: Build · scan · push ECR
+    needs: python-check
+    uses: ./.github/workflows/_docker-build.yml
+    with:
+      push: true
+      image-tag: ${{ github.sha }}
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      ECR_API_URL: ${{ secrets.ECR_API_URL }}
+      ECR_JUPYTER_URL: ${{ secrets.ECR_JUPYTER_URL }}
+
+  # Stage 1: auto-deploy to staging on every main push
+  deploy-staging:
+    name: Deploy → staging
+    needs: docker-build
+    uses: ./.github/workflows/_deploy-ecs.yml
+    with:
+      environment: staging
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+
+  # Stage 2: manual approval gate before prod
+  # The "prod" GitHub Environment must have Required Reviewers configured.
+  # Reviewers have 7 days to approve before the run expires.
+  deploy-prod:
+    name: Deploy → prod
+    needs: deploy-staging
+    uses: ./.github/workflows/_deploy-ecs.yml
+    with:
+      environment: prod
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}

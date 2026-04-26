@@ -1,0 +1,74 @@
+name: ♻ Bruno integration tests
+
+# Reusable layer: spin up the app via Docker Compose, seed data,
+# then run the Bruno collection with `bru run` (headless).
+# Called by ci.yml and nightly.yml.
+#
+# Bruno CLI docs: https://docs.usebruno.com/bru-cli/overview
+
+on:
+  workflow_call:
+    inputs:
+      base-url:
+        description: API base URL (defaults to local Docker Compose instance)
+        type: string
+        default: http://localhost:8000
+      collection-path:
+        description: Path to the Bruno collection directory
+        type: string
+        default: test/rest
+      seed-data:
+        description: Run POST /ingest before the collection (hits real Wikipedia)
+        type: boolean
+        default: false
+
+jobs:
+  bruno:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js (for Bruno CLI)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Bruno CLI
+        run: npm install -g @usebruno/cli
+
+      - name: Start services (Docker Compose)
+        if: inputs.base-url == 'http://localhost:8000'
+        run: |
+          docker compose up -d --build
+          echo "Waiting for API..."
+          timeout 90 bash -c \
+            'until curl -sf http://localhost:8000/docs > /dev/null; do sleep 3; done'
+          echo "API is up"
+
+      - name: Seed data
+        if: inputs.seed-data
+        run: |
+          curl -sf -X POST ${{ inputs.base-url }}/ingest \
+            && echo "Ingest OK" \
+            || echo "Ingest skipped (may already have data)"
+
+      - name: Run Bruno collection
+        run: |
+          bru run ${{ inputs.collection-path }} \
+            --env-var baseUrl=${{ inputs.base-url }} \
+            --reporter-json test/rest/results.json \
+            --reporter-html test/rest/results.html
+
+      - name: Upload Bruno test report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bruno-report-${{ github.run_number }}
+          path: |
+            test/rest/results.json
+            test/rest/results.html
+
+      - name: Stop services
+        if: always() && inputs.base-url == 'http://localhost:8000'
+        run: docker compose down -v

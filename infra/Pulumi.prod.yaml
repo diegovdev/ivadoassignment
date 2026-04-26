@@ -1,0 +1,6 @@
+# Production stack — 2 AZs, larger instances.
+config:
+  museums:az_count: "2"
+  museums:api_cpu: "512"
+  museums:api_memory: "1024"
+  # Set via: pulumi config set --secret db_password <value>

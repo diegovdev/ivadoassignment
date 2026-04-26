@@ -1,0 +1,66 @@
+name: ♻ Deploy to ECS
+
+# Reusable layer: force-redeploy ECS services → wait for stability → smoke test
+# Assumes images tagged :latest have already been pushed to ECR by _docker-build.yml
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: Target stack name (matches Pulumi stack / ECS resource prefix)
+        type: string
+        required: true
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+      AWS_REGION:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}   # triggers GitHub environment protection rules
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Force new deployment — API
+        run: |
+          aws ecs update-service \
+            --cluster museums-${{ inputs.environment }}-cluster \
+            --service museums-${{ inputs.environment }}-api-svc \
+            --force-new-deployment \
+            --query "service.serviceName" \
+            --output text
+
+      - name: Force new deployment — Jupyter
+        run: |
+          aws ecs update-service \
+            --cluster museums-${{ inputs.environment }}-cluster \
+            --service museums-${{ inputs.environment }}-jupyter-svc \
+            --force-new-deployment \
+            --query "service.serviceName" \
+            --output text
+
+      - name: Wait for API service stability (up to 10 min)
+        run: |
+          aws ecs wait services-stable \
+            --cluster museums-${{ inputs.environment }}-cluster \
+            --services museums-${{ inputs.environment }}-api-svc
+
+      - name: Smoke test — API /docs responds
+        run: |
+          API_HOST=$(aws elbv2 describe-load-balancers \
+            --names museums-${{ inputs.environment }}-alb \
+            --query "LoadBalancers[0].DNSName" \
+            --output text)
+          echo "API host: $API_HOST"
+          curl --retry 5 --retry-delay 10 --fail "http://${API_HOST}/docs" > /dev/null
+          echo "✅ Deployment healthy — http://${API_HOST}"

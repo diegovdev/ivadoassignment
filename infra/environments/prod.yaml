@@ -1,0 +1,16 @@
+# Production stack — 3 AZs, 2 minimum tasks (HA), multi-AZ RDS, deletion protection.
+# Usage: pulumi up --stack prod --config-file environments/prod.yaml
+config:
+  museums:environment: prod
+  museums:az_count: "3"
+  museums:api_cpu: "512"
+  museums:api_memory: "1024"
+  museums:ecs_api_desired: "2"
+  museums:ecs_api_min: "2"
+  museums:ecs_api_max: "6"
+  museums:db_instance_class: db.t3.small
+  museums:db_multi_az: "true"
+  museums:db_deletion_protection: "true"
+  museums:log_retention_days: "30"
+  museums:rds_auto_shutdown: "false"
+  museums:alarm_email: alerts@example.com

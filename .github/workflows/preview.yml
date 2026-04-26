@@ -1,0 +1,250 @@
+name: Preview
+
+# Per-PR preview environment using SQLite (ephemeral).
+#
+# Lifecycle:
+#   opened / synchronize / reopened  →  build image → run ECS Fargate task (public IP) → comment URL
+#   closed                           →  stop task → post teardown comment
+#
+# The shared preview infrastructure (cluster, task definition, security group) is
+# managed separately by Pulumi in infra/preview/. Secrets needed:
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION
+#   ECR_API_URL          — ECR repo URL for the API image
+#   PREVIEW_CLUSTER      — ECS cluster name (e.g. museums-preview-cluster)
+#   PREVIEW_SUBNET_ID    — a public subnet ID where tasks get public IPs
+#   PREVIEW_SG_ID        — security group allowing inbound :8000
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+    branches: [main]
+
+# One preview deploy at a time per PR — cancel any in-progress build on new push
+concurrency:
+  group: preview-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Deploy ────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy preview
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+
+    permissions:
+      pull-requests: write   # post PR comments
+      id-token: write        # OIDC (if using IAM role federation in future)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # ── Build + push image tagged pr-{N} ─────────────────────────────────
+      - name: Build and push preview image
+        id: build
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          IMAGE_TAG="pr-${PR_NUMBER}"
+          ECR_URL="${{ secrets.ECR_API_URL }}"
+
+          aws ecr get-login-password \
+            | docker login --username AWS --password-stdin "${ECR_URL}"
+
+          docker build -t "${ECR_URL}:${IMAGE_TAG}" -f Dockerfile .
+          docker push "${ECR_URL}:${IMAGE_TAG}"
+
+          echo "image=${ECR_URL}:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Built and pushed ${ECR_URL}:${IMAGE_TAG}"
+
+      # ── Stop any running task for this PR ─────────────────────────────────
+      - name: Stop existing preview task (if any)
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          CLUSTER="${{ secrets.PREVIEW_CLUSTER }}"
+
+          TASK_ARNS=$(aws ecs list-tasks \
+            --cluster "${CLUSTER}" \
+            --query 'taskArns[]' --output text 2>/dev/null || true)
+
+          for TASK in $TASK_ARNS; do
+            TAGS=$(aws ecs describe-tasks \
+              --cluster "${CLUSTER}" --tasks "${TASK}" \
+              --query 'tasks[0].tags' --output json 2>/dev/null || echo "[]")
+            if echo "${TAGS}" | python3 -c \
+                "import json,sys; tags={t['key']:t['value'] for t in json.load(sys.stdin)}; exit(0 if tags.get('pr-number')=='${PR_NUMBER}' else 1)" \
+                2>/dev/null; then
+              aws ecs stop-task --cluster "${CLUSTER}" --task "${TASK}" \
+                --reason "Superseded by new push" || true
+              echo "Stopped task: ${TASK}"
+            fi
+          done
+
+      # ── Register updated task definition + run task ────────────────────────
+      - name: Run preview task
+        id: run-task
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          CLUSTER="${{ secrets.PREVIEW_CLUSTER }}"
+          IMAGE="${{ steps.build.outputs.image }}"
+
+          # Fetch current task definition, swap image, re-register
+          TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition museums-preview-api \
+            --query 'taskDefinition' --output json)
+
+          NEW_TASK_DEF=$(echo "${TASK_DEF}" | python3 - <<'PYEOF'
+import json, sys
+td = json.load(sys.stdin)
+import os
+td['containerDefinitions'][0]['image'] = os.environ['IMAGE']
+for k in ['taskDefinitionArn', 'revision', 'status', 'requiresAttributes',
+          'compatibilities', 'registeredAt', 'registeredBy']:
+    td.pop(k, None)
+print(json.dumps(td))
+PYEOF
+          )
+          NEW_TD_ARN=$(aws ecs register-task-definition \
+            --cli-input-json "${NEW_TASK_DEF}" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+
+          # Run the task (public IP, SQLite — data is ephemeral)
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "${CLUSTER}" \
+            --task-definition "${NEW_TD_ARN}" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ secrets.PREVIEW_SUBNET_ID }}],securityGroups=[${{ secrets.PREVIEW_SG_ID }}],assignPublicIp=ENABLED}" \
+            --tags "key=pr-number,value=${PR_NUMBER}" "key=commit,value=${{ github.event.pull_request.head.sha }}" \
+            --count 1 \
+            --query 'tasks[0].taskArn' --output text)
+
+          echo "task-arn=${TASK_ARN}" >> "$GITHUB_OUTPUT"
+          echo "Started task: ${TASK_ARN}"
+        env:
+          IMAGE: ${{ steps.build.outputs.image }}
+
+      - name: Wait for task to start running
+        run: |
+          aws ecs wait tasks-running \
+            --cluster "${{ secrets.PREVIEW_CLUSTER }}" \
+            --tasks "${{ steps.run-task.outputs.task-arn }}"
+
+      # ── Resolve public IP from ENI ─────────────────────────────────────────
+      - name: Resolve public IP
+        id: ip
+        run: |
+          TASK_ARN="${{ steps.run-task.outputs.task-arn }}"
+          CLUSTER="${{ secrets.PREVIEW_CLUSTER }}"
+
+          ENI_ID=$(aws ecs describe-tasks \
+            --cluster "${CLUSTER}" --tasks "${TASK_ARN}" \
+            --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value | [0]' \
+            --output text)
+
+          PUBLIC_IP=$(aws ec2 describe-network-interfaces \
+            --network-interface-ids "${ENI_ID}" \
+            --query 'NetworkInterfaces[0].Association.PublicIp' \
+            --output text)
+
+          echo "url=http://${PUBLIC_IP}:8000" >> "$GITHUB_OUTPUT"
+          echo "Preview URL: http://${PUBLIC_IP}:8000"
+
+      # ── Post / update PR comment with preview URL ─────────────────────────
+      - name: Post preview URL to PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const url   = "${{ steps.ip.outputs.url }}";
+            const sha   = "${{ github.event.pull_request.head.sha }}".slice(0, 7);
+            const prNum = ${{ github.event.pull_request.number }};
+            const marker = "<!-- museums-preview -->";
+
+            // Delete previous preview comments from this workflow
+            const existing = await github.rest.issues.listComments({
+              owner: context.repo.owner, repo: context.repo.repo, issue_number: prNum,
+            });
+            for (const c of existing.data) {
+              if (c.body.includes(marker)) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner, repo: context.repo.repo, comment_id: c.id,
+                });
+              }
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNum,
+              body: [
+                marker,
+                "## 🔍 Preview environment",
+                "",
+                "| | |",
+                "|---|---|",
+                `| **API** | ${url} |`,
+                `| **Docs** | ${url}/docs |`,
+                `| **Commit** | \`${sha}\` |`,
+                "",
+                "> ⚠️ Uses SQLite (ephemeral). Data resets on each deploy.",
+                "> Environment is torn down automatically when this PR closes.",
+              ].join("\n"),
+            });
+
+  # ── Teardown ──────────────────────────────────────────────────────────────
+  teardown:
+    name: Tear down preview
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Stop preview task
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          CLUSTER="${{ secrets.PREVIEW_CLUSTER }}"
+
+          TASK_ARNS=$(aws ecs list-tasks \
+            --cluster "${CLUSTER}" \
+            --query 'taskArns[]' --output text 2>/dev/null || true)
+
+          STOPPED=0
+          for TASK in $TASK_ARNS; do
+            TAGS=$(aws ecs describe-tasks \
+              --cluster "${CLUSTER}" --tasks "${TASK}" \
+              --query 'tasks[0].tags' --output json 2>/dev/null || echo "[]")
+            if echo "${TAGS}" | python3 -c \
+                "import json,sys; tags={t['key']:t['value'] for t in json.load(sys.stdin)}; exit(0 if tags.get('pr-number')=='${PR_NUMBER}' else 1)" \
+                2>/dev/null; then
+              aws ecs stop-task \
+                --cluster "${CLUSTER}" --task "${TASK}" \
+                --reason "PR #${PR_NUMBER} closed"
+              echo "Stopped: ${TASK}"
+              STOPPED=$((STOPPED + 1))
+            fi
+          done
+          echo "Stopped ${STOPPED} task(s) for PR #${PR_NUMBER}"
+
+      - name: Post teardown comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ github.event.pull_request.number }},
+              body: "🗑️ Preview environment stopped (PR closed).",
+            });

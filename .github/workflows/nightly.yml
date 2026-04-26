@@ -1,0 +1,122 @@
+name: Nightly
+
+# Runs at 02:00 UTC every day (also triggerable manually).
+# Runs the full quality + security + stress pipeline to catch drift,
+# dependency vulnerabilities, and performance regressions overnight.
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch: # allow on-demand trigger from the GitHub UI
+
+jobs:
+  preflight:
+    name: Preflight checks
+    uses: ./.github/workflows/_preflight.yml
+
+  python-check:
+    name: Lint · format · tests
+    needs: [preflight]
+    uses: ./.github/workflows/_python-check.yml
+
+  security:
+    name: SAST · audit · CodeQL
+    needs: [preflight]
+    uses: ./.github/workflows/_security.yml
+
+  docker-build:
+    name: Build + Trivy scan
+    needs: [preflight]
+    uses: ./.github/workflows/_docker-build.yml
+    with:
+      push: false
+      image-tag: nightly-${{ github.run_number }}
+
+  bruno-tests:
+    name: Bruno integration tests (seeded)
+    needs: [python-check]
+    uses: ./.github/workflows/_bruno-tests.yml
+    with:
+      seed-data: true   # nightly does the full Wikipedia ingest + collection run
+
+  stress-test:
+    name: Stress test (local Docker Compose)
+    needs: [python-check]   # need passing tests before hammering the app
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install app + stress dependencies
+        run: uv sync --extra stress
+
+      - name: Start services
+        run: docker compose up -d --build
+
+      - name: Wait for API to be healthy
+        run: |
+          timeout 90 bash -c \
+            'until curl -sf http://localhost:8000/docs > /dev/null; do
+               echo "waiting for API..."; sleep 3
+             done'
+          echo "API is up"
+
+      - name: Seed data (real Wikipedia ingest — acceptable in nightly)
+        run: |
+          curl -sf -X POST http://localhost:8000/ingest \
+            && echo "Ingest OK" \
+            || echo "Ingest failed — continuing (may already have data)"
+
+      - name: Run Locust — read-heavy scenario
+        run: |
+          uv run locust \
+            --headless \
+            --host http://localhost:8000 \
+            --users 30 \
+            --spawn-rate 5 \
+            --run-time 3m \
+            --locustfile test/stress/locustfile.py \
+            --html test/stress/nightly-report.html \
+            --csv test/stress/nightly \
+            --exit-code-on-error 0   # we check error rate manually below
+
+      - name: Assert error rate, p95, and p99 thresholds
+        run: |
+          python3 test/stress/check_results.py \
+            test/stress/nightly_stats.csv \
+            0.01 \
+            1500 \
+            2500
+
+      - name: Upload stress test report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-stress-report-${{ github.run_number }}
+          path: test/stress/nightly*
+
+      - name: Stop services
+        if: always()
+        run: docker compose down -v
+
+  notify-on-failure:
+    name: Notify on failure
+    needs: [preflight, python-check, security, docker-build, bruno-tests, stress-test]
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub issue on failure
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🔴 Nightly build failed — ${new Date().toISOString().slice(0,10)}`,
+              body: `Nightly workflow run [#${context.runNumber}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) failed.\n\nPlease investigate.`,
+              labels: ["nightly", "bug"]
+            });
