@@ -1,7 +1,7 @@
 name: CI
 
 # Runs on every PR and push to main.
-# Gates: lint · format · unit tests · security · container build + Trivy scan · Bruno integration tests
+# Gates: lint · format · unit tests · security · container build + Trivy scan · API integration tests
 # Does NOT push images or deploy — that is cd.yml's job.
 
 on:
@@ -38,11 +38,11 @@ jobs:
       push: false
       image-tag: ci-${{ github.run_number }}
 
-  bruno-tests:
-    name: Bruno integration tests
+  api-tests:
+    name: API integration tests
     # Run after unit tests pass — no point hitting the API if the code is broken
     needs: [python-check]
-    uses: ./.github/workflows/_bruno-tests.yml
+    uses: ./.github/workflows/_api-tests.yml
     with:
       seed-data: false   # skip real Wikipedia call on every PR; nightly does full seed
 
@@ -50,7 +50,7 @@ jobs:
   # not the individual matrix jobs, to keep required-checks easy to manage.
   all-checks-pass:
     name: All checks passed
-    needs: [preflight, python-check, security, docker-build, bruno-tests]
+    needs: [preflight, python-check, security, docker-build, api-tests]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -60,7 +60,7 @@ jobs:
                 "${{ needs.python-check.result }}" != "success" || \
                 "${{ needs.security.result }}" != "success" || \
                 "${{ needs.docker-build.result }}" != "success" || \
-                "${{ needs.bruno-tests.result }}" != "success" ]]; then
+                "${{ needs.api-tests.result }}" != "success" ]]; then
             echo "One or more checks failed."
             exit 1
           fi

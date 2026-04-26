@@ -32,10 +32,10 @@ jobs:
       push: false
       image-tag: nightly-${{ github.run_number }}
 
-  bruno-tests:
-    name: Bruno integration tests (seeded)
+  api-tests:
+    name: API integration tests (seeded)
     needs: [python-check]
-    uses: ./.github/workflows/_bruno-tests.yml
+    uses: ./.github/workflows/_api-tests.yml
     with:
       seed-data: true   # nightly does the full Wikipedia ingest + collection run
 
@@ -105,7 +105,7 @@ jobs:
 
   notify-on-failure:
     name: Notify on failure
-    needs: [preflight, python-check, security, docker-build, bruno-tests, stress-test]
+    needs: [preflight, python-check, security, docker-build, api-tests, stress-test]
     if: failure()
     runs-on: ubuntu-latest
     steps:
