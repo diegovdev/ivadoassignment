@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+
+# uv
+.venv/
+
+# Environment
+.env
+
+# Data
+data/
+
+# Jupyter
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Pulumi
+infra/.venv/
+infra/.pulumi/
+*.pulumi.state
+
+# Stress test generated output
+test/stress/nightly*
+test/stress/manual*
